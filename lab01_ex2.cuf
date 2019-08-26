@@ -1,0 +1,159 @@
+
+module HelperSubroutines
+contains
+    !
+    ! Helper method to generate a very naive "hash".
+    !
+    subroutine generate_hash(n, y, hash)
+        implicit none
+        integer, intent(in) :: n
+        real, intent(in)    :: y(:)
+        real, intent(out)   :: hash
+        integer             :: i
+        
+        hash = sum(y)
+    end subroutine generate_hash
+    
+    !
+    ! SAXPY reference implementation using the CPU.
+    !
+    subroutine cpu_saxpy(n, a, x, y)
+        implicit none
+        integer, intent(in) :: n
+        real, intent(in)    :: a
+        real, intent(in)    :: x(:)
+        real, intent(inout) :: y(:)
+        integer             :: i
+        
+        y = a * x + y
+    end subroutine cpu_saxpy
+end module HelperSubroutines
+
+module CUDAKernels
+contains
+!////////////////
+!// TO-DO #2.6 /////////////////////////////////////////////////////////////
+!// Declare the kernel gpu_saxpy() with the same interface as cpu_saxpy() //
+	attributes(global) subroutine gpu_saxpy(ARRAY_SIZE, a, d_x, d_y)
+		implicit none
+		real, value :: a
+		integer, value :: ARRAY_SIZE
+		integer :: tid	! thread id
+		real :: d_x(ARRAY_SIZE)
+		real :: d_y(ARRAY_SIZE)
+		
+		tid = (blockIdx%x - 1)*blockDim%x + threadIdx%x
+	
+		d_y(tid) = a*d_x(tid) + d_y(tid)
+		
+	end subroutine gpu_saxpy
+!///////////////////////////////////////////////////////////////////////////
+end module CUDAKernels
+
+program lab01_ex2
+    use HelperSubroutines
+    use CUDAKernels
+    use cudafor
+    implicit none
+    integer, parameter        :: BLOCK_SIZE = 256	! number of threads per block
+    integer, parameter        :: ARRAY_SIZE = 16777216
+    integer                   :: argc
+    character(len=21)         :: argv
+    real                      :: a
+    real, allocatable         :: x(:)
+    real, allocatable         :: y(:)
+    real                      :: error
+    real                      :: error_gpu
+    integer                   :: hr1, hr2
+    
+    !////////////////
+    !// TO-DO #2.2 ///////////////////////////////
+    !// Introduce the grid and block definition //
+	! 65536 * 256 = 16777216
+	TYPE(DIM3) :: GRID
+	TYPE(DIM3) :: BLOCK
+
+	integer :: num_block
+
+	num_block = (ARRAY_SIZE+BLOCK_SIZE-1)/BLOCK_SIZE
+
+	GRID = DIM3(num_block,1,1) ! 65539 BLOCK IN THE GRID
+	BLOCK = DIM3(BLOCK_SIZE,1,1)	! 256 THREAD PER BLOCK
+
+    !/////////////////////////////////////////////
+    
+    !//////////////////
+    !// TO-DO #2.3.1 /////////////////////////////
+    !// Declare the device pointers d_x and d_y //
+	REAL, ALLOCATABLE, DEVICE :: d_x(:)
+	REAL, ALLOCATABLE, DEVICE :: d_y(:)
+	hr1 = cudaMalloc(d_x, ARRAY_SIZE)
+	hr2 = cudaMalloc(d_y, ARRAY_SIZE)
+    !/////////////////////////////////////////////
+    
+    ! Make sure the constant is provided
+    argc = command_argument_count()
+    if(argc /= 1) then
+        write (*,*) 'Error: The constant is missing!'
+        call exit(-1)
+    end if
+    
+    ! Retrieve the constant and allocate the arrays on the CPU
+    call get_command_argument(1, argv)
+    READ (argv,*) a
+    allocate(x(ARRAY_SIZE))
+    allocate(y(ARRAY_SIZE))
+    
+    ! Initialize them with fixed values
+    x = 0.1
+    y = 0.2
+    
+    !//////////////////
+    !// TO-DO #2.3.2 ////////////////////////////////////////////////////////
+    !// Allocate d_x and d_y on the GPU, and copy the content from the CPU //
+	hr1 = cudaMemcpy(d_x, x, ARRAY_SIZE)
+	hr2 = cudaMemcpy(d_y, y, ARRAY_SIZE)
+    !////////////////////////////////////////////////////////////////////////
+    
+    ! Call the CPU code
+    call cpu_saxpy(ARRAY_SIZE, a, x, y)
+    
+    ! Calculate the "hash" of the result from the CPU
+    call generate_hash(ARRAY_SIZE, y, error);
+    
+    !////////////////
+    !// TO-DO #2.4 ////////////////////////////////////////
+    !// Call the GPU kernel gpu_saxpy() with d_x and d_y //
+	call gpu_saxpy<<<grid, block>>>(ARRAY_SIZE, a, d_x, d_y)
+    !//////////////////////////////////////////////////////
+    
+    !//////////////////
+    !// TO-DO #2.5.1 ////////////////////////////////////////////////////
+    !// Copy the content of d_y from the GPU to the array y on the CPU //
+	hr2 = cudaMemcpy(y, d_y, ARRAY_SIZE)
+    !////////////////////////////////////////////////////////////////////
+    
+    ! Calculate the "hash" of the result from the GPU
+    call generate_hash(ARRAY_SIZE, y, error_gpu);
+    
+    error = abs(error - error_gpu)
+    
+    ! Confirm that the execution has finished
+    write (*,*) 'Execution finished (error=', error, ').'
+    
+    if (error > 0.0001) then
+        write (*,*) 'Error: The solution is incorrect!'
+    end if
+    
+    ! Release all the allocations
+    deallocate(x)
+    deallocate(y)
+    
+    !//////////////////
+    !// TO-DO #2.5.2 /////////
+    !// Release d_x and d_y //
+	h1 =  cudaFree(d_x)
+	h2 = cudaFree(d_y)
+    !/////////////////////////
+end program lab01_ex2
+
